@@ -1,2 +1,2 @@
-# wannabe-web-engineer-04-2
+# wannabe-web-engineer-04
 リポジトリの作成以降の内容
