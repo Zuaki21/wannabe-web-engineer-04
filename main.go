@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -24,11 +25,33 @@ func main() {
 	}
 
 	fmt.Println("Connected!")
-	city := City{}
 
+	population, err := strconv.Atoi(os.Args[2])
 
-	db.Get(&city, "SELECT * FROM city WHERE Name = ?",os.Args[1])
+	//エラー処理
+	if err != nil {
+		panic(err)
+	}
 
-	fmt.Printf("%sの人口は%d人です\n", os.Args[1], city.Population)
-	//fmt.Printf("Tokyoの人口は%d人です\n", city.Population)
+	cityState := `INSERT INTO city (Name, Population, CountryCode) VALUES (?, ?, ?)`
+	db.MustExec(cityState, os.Args[1], population, "JPN")
+
+	//一覧表示
+	cities := []City{}
+	db.Select(&cities, "SELECT * FROM city WHERE CountryCode='JPN'")
+
+	fmt.Println("日本の都市一覧")
+	for _, city := range cities {
+		fmt.Printf("都市名: %s, 人口: %d人\n", city.Name, city.Population)
+	}
+
+	cityStateDelete := `DELETE FROM city WHERE Name = ?`
+	db.MustExec(cityStateDelete, os.Args[1])
+
+	//一覧表示
+	db.Select(&cities, "SELECT * FROM city WHERE CountryCode='JPN'")
+	fmt.Println("日本の都市一覧")
+	for _, city := range cities {
+		fmt.Printf("都市名: %s, 人口: %d人\n", city.Name, city.Population)
+	}
 }
