@@ -3,11 +3,15 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
-	"strconv"
+
+	//"strconv"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
+	"github.com/labstack/echo/v4"
+	//"github.com/labstack/echo/v4/middleware"
 )
 
 type City struct {
@@ -18,40 +22,58 @@ type City struct {
 	Population  int    `json:"population,omitempty"  db:"Population"`
 }
 
+var (
+	db *sqlx.DB
+)
+
 func main() {
-	db, err := sqlx.Connect("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=True&loc=Local", os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_HOSTNAME"), os.Getenv("DB_PORT"), os.Getenv("DB_DATABASE")))
+	_db, err := sqlx.Connect("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=True&loc=Local", os.Getenv("DB_USERNAME"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_HOSTNAME"), os.Getenv("DB_PORT"), os.Getenv("DB_DATABASE")))
 	if err != nil {
 		log.Fatalf("Cannot Connect to Database: %s", err)
 	}
+	db = _db
 
-	fmt.Println("Connected!")
+	e := echo.New()
 
-	population, err := strconv.Atoi(os.Args[2])
+	e.POST("/add", addCityHandler)
 
-	//エラー処理
-	if err != nil {
-		panic(err)
+	e.POST("/delete/:name", deleteCityHandler)
+
+	e.GET("/cities/:cityName", getCityInfoHandler)
+
+	e.Start(":4000")
+}
+
+func getCityInfoHandler(c echo.Context) error {
+	cityName := c.Param("cityName")
+	fmt.Println(cityName)
+
+	city := City{}
+	db.Get(&city, "SELECT * FROM city WHERE Name=?", cityName)
+	if city.Name == "" {
+		return c.NoContent(http.StatusNotFound)
 	}
 
-	cityState := `INSERT INTO city (Name, Population, CountryCode) VALUES (?, ?, ?)`
-	db.MustExec(cityState, os.Args[1], population, "JPN")
+	return c.JSON(http.StatusOK, city)
+}
 
-	//一覧表示
-	cities := []City{}
-	db.Select(&cities, "SELECT * FROM city WHERE CountryCode='JPN'")
-
-	fmt.Println("日本の都市一覧")
-	for _, city := range cities {
-		fmt.Printf("都市名: %s, 人口: %d人\n", city.Name, city.Population)
+func addCityHandler(c echo.Context) error {
+	var cityData City
+	if err := c.Bind(&cityData); err != nil {
+		return c.JSON(http.StatusBadRequest, cityData)
 	}
+
+	cityState := `INSERT INTO city (ID, Name, CountryCode, District, Population) VALUES (?, ?, ?, ? ,?)`
+	db.MustExec(cityState, cityData.ID, cityData.Name, cityData.CountryCode, cityData.District, cityData.Population)
+
+	return c.String(http.StatusOK, "New city("+cityData.Name+") is added.")
+}
+
+func deleteCityHandler(c echo.Context) error {
+	cityName := c.Param("name")
 
 	cityStateDelete := `DELETE FROM city WHERE Name = ?`
-	db.MustExec(cityStateDelete, os.Args[1])
+	db.MustExec(cityStateDelete, cityName)
 
-	//一覧表示
-	db.Select(&cities, "SELECT * FROM city WHERE CountryCode='JPN'")
-	fmt.Println("日本の都市一覧")
-	for _, city := range cities {
-		fmt.Printf("都市名: %s, 人口: %d人\n", city.Name, city.Population)
-	}
+	return c.String(http.StatusOK, cityName+" is added.")
 }
