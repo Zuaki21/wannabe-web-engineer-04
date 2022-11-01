@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"os"
 
-	//"strconv"
+	"github.com/labstack/echo-contrib/session"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	"github.com/srinathgs/mysqlstore"
+	"golang.org/x/crypto/bcrypt"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
-	"github.com/labstack/echo/v4"
-	//"github.com/labstack/echo/v4/middleware"
 )
 
 type City struct {
@@ -33,20 +35,109 @@ func main() {
 	}
 	db = _db
 
+	store, err := mysqlstore.NewMySQLStoreFromConnection(db.DB, "sessions", "/", 60*60*24*14, []byte("secret-token"))
+	if err != nil {
+		panic(err)
+	}
+
 	e := echo.New()
+	e.Use(middleware.Logger())
+	e.Use(session.Middleware(store))
 
-	e.POST("/add", addCityHandler)
+	e.GET("/ping", func(c echo.Context) error {
+		return c.String(http.StatusOK, "pong")
+	})
 
-	e.POST("/delete/:name", deleteCityHandler)
+	e.POST("/login", postLoginHandler)
+	e.POST("/signup", postSignUpHandler)
 
-	e.GET("/cities/:cityName", getCityInfoHandler)
+	withLogin := e.Group("")
+	withLogin.Use(checkLogin)
+	withLogin.GET("/cities/:cityName", getCityInfoHandler)
+	withLogin.GET("/countries/:countryCode", getCountriesHandler)
+	withLogin.GET("/world", getWorldHandler)
+	withLogin.GET("/whoami", whoAmIHandler)
 
 	e.Start(":4000")
 }
 
+type LoginRequestBody struct {
+	Username string `json:"username,omitempty" form:"username"`
+	Password string `json:"password,omitempty" form:"password"`
+}
+
+type User struct {
+	Username   string `json:"username,omitempty"  db:"Username"`
+	HashedPass string `json:"-"  db:"HashedPass"`
+}
+
+func postSignUpHandler(c echo.Context) error {
+	req := LoginRequestBody{}
+	c.Bind(&req) //リクエストボディから取得
+
+	// もう少し真面目にバリデーションするべき
+	if req.Password == "" || req.Username == "" {
+		// エラーは真面目に返すべき
+		return c.String(http.StatusBadRequest, "項目が空です")
+	}
+
+	hashedPass, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("bcrypt generate error: %v", err))
+	}
+
+	// ユーザーの存在チェック
+	var count int
+
+	err = db.Get(&count, "SELECT COUNT(*) FROM users WHERE Username=?", req.Username)
+	if err != nil {
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("db error: %v", err))
+	}
+
+	if count > 0 {
+		return c.String(http.StatusConflict, "ユーザーが既に存在しています")
+	}
+
+	_, err = db.Exec("INSERT INTO users (Username, HashedPass) VALUES (?, ?)", req.Username, hashedPass)
+	if err != nil {
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("db error: %v", err))
+	}
+	return c.NoContent(http.StatusCreated)
+}
+
+func postLoginHandler(c echo.Context) error {
+	req := LoginRequestBody{}
+	c.Bind(&req)
+
+	user := User{}
+	err := db.Get(&user, "SELECT * FROM users WHERE username=?", req.Username)
+	if err != nil {
+		return c.String(http.StatusInternalServerError, fmt.Sprintf("db error: %v", err))
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(user.HashedPass), []byte(req.Password))
+	if err != nil {
+		if err == bcrypt.ErrMismatchedHashAndPassword {
+			return c.NoContent(http.StatusForbidden)
+		} else {
+			return c.NoContent(http.StatusInternalServerError)
+		}
+	}
+
+	sess, err := session.Get("sessions", c)
+	if err != nil {
+		fmt.Println(err)
+		return c.String(http.StatusInternalServerError, "something wrong in getting session")
+	}
+	sess.Values["userName"] = req.Username
+	// delete(sess.Values,"userName")
+	sess.Save(c.Request(), c.Response())
+
+	return c.NoContent(http.StatusOK)
+}
+
 func getCityInfoHandler(c echo.Context) error {
 	cityName := c.Param("cityName")
-	fmt.Println(cityName)
 
 	city := City{}
 	db.Get(&city, "SELECT * FROM city WHERE Name=?", cityName)
@@ -57,23 +148,65 @@ func getCityInfoHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, city)
 }
 
-func addCityHandler(c echo.Context) error {
-	var cityData City
-	if err := c.Bind(&cityData); err != nil {
-		return c.JSON(http.StatusBadRequest, cityData)
+func checkLogin(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		sess, err := session.Get("sessions", c)
+		if err != nil {
+			fmt.Println(err)
+			return c.String(http.StatusInternalServerError, "something wrong in getting session")
+		}
+
+		if sess.Values["userName"] == nil {
+			return c.String(http.StatusForbidden, "please login")
+		}
+		c.Set("userName", sess.Values["userName"].(string))
+
+		return next(c)
 	}
-
-	cityState := `INSERT INTO city (ID, Name, CountryCode, District, Population) VALUES (?, ?, ?, ? ,?)`
-	db.MustExec(cityState, cityData.ID, cityData.Name, cityData.CountryCode, cityData.District, cityData.Population)
-
-	return c.String(http.StatusOK, "New city("+cityData.Name+") is added.")
 }
 
-func deleteCityHandler(c echo.Context) error {
-	cityName := c.Param("name")
+type Me struct {
+	Username string `json:"username,omitempty"  db:"username"`
+}
 
-	cityStateDelete := `DELETE FROM city WHERE Name = ?`
-	db.MustExec(cityStateDelete, cityName)
+func whoAmIHandler(c echo.Context) error {
+	me := Me{}
+	me.Username = c.Get("userName").(string)
+	return c.JSON(http.StatusOK, me)
+}
 
-	return c.String(http.StatusOK, cityName+" is added.")
+func getCountriesHandler(c echo.Context) error {
+	countryCode := c.Param("countryCode")
+
+	cities := []City{}
+	err := db.Select(&cities, "SELECT * FROM city WHERE CountryCode=?", countryCode)
+
+	if err != nil {
+		return c.NoContent(http.StatusInternalServerError)
+	}
+	if len(cities) == 0 {
+		return c.NoContent(http.StatusNotFound)
+	}
+	return c.JSON(http.StatusOK, cities)
+}
+
+type Country struct {
+	Code       string `json:"code,omitempty"  db:"Code"`
+	Name       string `json:"name,omitempty"  db:"Name"`
+	Continent  string `json:"continent,omitempty"  db:"Continent"`
+	Region     string `json:"region,omitempty"  db:"Region"`
+	Population int    `json:"population,omitempty"  db:"Population"`
+}
+
+func getWorldHandler(c echo.Context) error {
+	countries := []Country{}
+	err := db.Select(&countries, "SELECT Code, Name, Continent, Region, Population FROM country")
+
+	if err != nil {
+		return c.NoContent(http.StatusInternalServerError)
+	}
+	if len(countries) == 0 {
+		return c.NoContent(http.StatusNotFound)
+	}
+	return c.JSON(http.StatusOK, countries)
 }
