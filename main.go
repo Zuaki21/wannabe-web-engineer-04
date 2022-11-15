@@ -200,7 +200,7 @@ type Country struct {
 
 func getWorldHandler(c echo.Context) error {
 	countries := []Country{}
-	err := db.Select(&countries, "SELECT Code, Name, Continent, Region, Population FROM country")
+	err := db.Select(&countries, "SELECT Code, Name, Continent, Region, Population FROM country ORDER BY Population DESC")
 
 	if err != nil {
 		return c.NoContent(http.StatusInternalServerError)
